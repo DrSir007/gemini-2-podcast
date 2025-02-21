@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react'
-import { GraduationCap, MessageCircle, BookOpen, FileText, Upload, Link2 } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { GraduationCap, MessageCircle, BookOpen, FileText, Upload, Link2, Mic2 } from 'lucide-react'
 import axios from 'axios'
 import clsx from 'clsx'
 
@@ -45,15 +45,41 @@ const contentTypes = [
   },
 ]
 
+interface Voice {
+  id: string
+  name: string
+  description: string
+}
+
+interface PodcastResponse {
+  script: string;
+  audio_path: string;
+}
+
 export default function App() {
-  const [selectedStyle, setSelectedStyle] = useState('')
-  const [selectedType, setSelectedType] = useState('')
+  const [selectedStyle, setSelectedStyle] = useState('conversational')
+  const [selectedType, setSelectedType] = useState('monologue')
+  const [selectedVoice, setSelectedVoice] = useState('nova')
   const [content, setContent] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [generatedScript, setGeneratedScript] = useState<string | null>(null)
+  const [voices, setVoices] = useState<Voice[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    // Fetch available voices
+    const fetchVoices = async () => {
+      try {
+        const response = await axios.get('http://localhost:8000/voices')
+        setVoices(response.data.voices)
+      } catch (err) {
+        console.error('Error fetching voices:', err)
+      }
+    }
+    fetchVoices()
+  }, [])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -66,64 +92,54 @@ export default function App() {
     }
   }
 
-  const handleSubmit = async () => {
-    if (!selectedStyle || !selectedType || !content) {
-      setError('Please fill in all fields')
-      return
-    }
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+    setAudioUrl(null);
+    setGeneratedScript(null);
 
-    setIsLoading(true)
-    setError('')
-    setAudioUrl(null)
-    setGeneratedScript(null)
+    if (!content || !selectedStyle || !selectedType || !selectedVoice) {
+      setError('Please fill in all fields');
+      setIsLoading(false);
+      return;
+    }
 
     try {
-      const response = await axios.post('http://localhost:8000/generate-podcast', {
+      const response = await axios.post<PodcastResponse>('http://localhost:8000/generate-podcast', {
+        content,
         style: selectedStyle,
-        content_type: selectedType,
-        content: content,
-      }, {
-        responseType: 'blob',
-      })
+        type: selectedType,
+        voice: selectedVoice
+      });
 
-      // Get the script from headers
-      const script = response.headers['x-script']
-      if (script) {
-        setGeneratedScript(script)
-      }
+      const { script, audio_path } = response.data;
+      
+      // Get the filename from the path
+      const filename = audio_path.split('/').pop();
+      
+      // Set the audio URL using the backend endpoint
+      setAudioUrl(`http://localhost:8000/audio/${filename}`);
+      setGeneratedScript(script);
 
-      // Handle audio file
-      if (response.data instanceof Blob) {
-        const audioBlob = new Blob([response.data], { type: 'audio/mp3' })
-        const url = window.URL.createObjectURL(audioBlob)
-        setAudioUrl(url)
-      }
+      // Create a downloadable link for the script
+      const blob = new Blob([script], { type: 'text/plain' });
+      const scriptUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = scriptUrl;
+      link.download = 'podcast-script.txt';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(scriptUrl);
 
-      // If we got JSON instead (error case), read it
-      if (response.data.type === 'application/json') {
-        const reader = new FileReader()
-        reader.onload = () => {
-          const result = JSON.parse(reader.result as string)
-          if (result.script) {
-            setGeneratedScript(result.script)
-          }
-          if (result.error) {
-            setError(result.error)
-          }
-        }
-        reader.readAsText(response.data)
-      }
     } catch (err) {
-      console.error('Error details:', err)
-      if (axios.isAxiosError(err) && err.response) {
-        setError(err.response.data.detail || 'An error occurred while generating the podcast')
-      } else {
-        setError('An error occurred while connecting to the server')
-      }
+      console.error('Error generating podcast:', err);
+      setError(err instanceof Error ? err.message : 'Failed to generate podcast');
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
-  }
+  }, [content, selectedStyle, selectedType, selectedVoice]);
 
   return (
     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8 bg-gray-50">
@@ -152,6 +168,33 @@ export default function App() {
                   <div>
                     <p className="text-lg font-medium text-gray-900">{style.name}</p>
                     <p className="mt-1 text-sm text-gray-500">{style.description}</p>
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-12">
+          <h2 className="text-2xl font-semibold text-gray-900">Choose Your Voice</h2>
+          <p className="mt-2 text-sm text-gray-600">
+            Select a neural voice for your podcast. Each voice has unique characteristics.
+          </p>
+          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {voices.map((voice) => (
+              <button
+                key={voice.id}
+                onClick={() => setSelectedVoice(voice.id)}
+                className={clsx(
+                  'relative rounded-lg p-6 text-left transition-all duration-200 hover:bg-gray-50',
+                  selectedVoice === voice.id ? 'ring-2 ring-primary-500 bg-primary-50' : 'border'
+                )}
+              >
+                <div className="flex items-center space-x-4">
+                  <Mic2 className="h-6 w-6 text-primary-600" />
+                  <div>
+                    <p className="text-lg font-medium text-gray-900">{voice.name}</p>
+                    <p className="mt-1 text-sm text-gray-500">{voice.description}</p>
                   </div>
                 </div>
               </button>
@@ -210,11 +253,18 @@ export default function App() {
 
           <div className="mt-8">
             <button
-              onClick={handleSubmit}
+              type="submit"
               disabled={isLoading}
               className="btn-primary w-full"
             >
-              {isLoading ? 'Generating...' : 'Generate Podcast'}
+              {isLoading ? (
+                <>
+                  <Mic2 className="animate-pulse mr-2" size={20} />
+                  Generating...
+                </>
+              ) : (
+                'Generate Podcast'
+              )}
             </button>
           </div>
         </div>
