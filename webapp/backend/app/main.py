@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 import os
@@ -12,24 +12,28 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from pydub import AudioSegment
 import tempfile
+import logging
 
-# Add parent directory to path to import podcast generation modules
-sys.path.append(str(Path(__file__).parent.parent.parent.parent))
-import generate_script
-import generate_audio
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
 
 # Configure Google Gemini API
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+api_key = os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    raise ValueError("GOOGLE_API_KEY environment variable is not set")
+
+genai.configure(api_key=api_key)
 
 app = FastAPI(title="AI Podcast Generator API")
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React development server
+    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +55,8 @@ async def read_root():
 @app.post("/generate-podcast")
 async def generate_podcast(request: PodcastRequest):
     try:
+        logger.info(f"Generating podcast with style: {request.style}, type: {request.content_type}")
+        
         # Initialize Gemini model
         model = genai.GenerativeModel('gemini-pro')
         
@@ -59,22 +65,31 @@ async def generate_podcast(request: PodcastRequest):
         
         {request.content}
         
-        Make it engaging, informative, and natural-sounding. Include appropriate transitions and maintain the chosen style throughout."""
+        Make it engaging, informative, and natural-sounding. Include appropriate transitions and maintain the chosen style throughout.
+        Format the output as a proper podcast script with speaker indicators and clear sections."""
         
         # Generate the script
         response = model.generate_content(prompt)
         
+        if not response or not response.text:
+            raise HTTPException(status_code=500, detail="Failed to generate content")
+        
         # Extract and clean the generated text
         script = response.text
         
-        # For now, return the script - in future versions, we'll add text-to-speech
-        return {
+        logger.info("Successfully generated podcast script")
+        
+        return JSONResponse(content={
             "script": script,
             "status": "success"
-        }
+        })
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error generating podcast: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"An error occurred while generating the podcast: {str(e)}"
+        )
 
 @app.post("/upload-file")
 async def upload_file(file: UploadFile = File(...)):
@@ -137,7 +152,18 @@ async def generate_podcast_from_file(
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy"}
+    try:
+        # Test Gemini API connection
+        model = genai.GenerativeModel('gemini-pro')
+        response = model.generate_content("Test connection")
+        if response and response.text:
+            return {"status": "healthy", "api_connection": "ok"}
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "unhealthy", "error": str(e)}
+        )
 
 if __name__ == "__main__":
     import uvicorn
