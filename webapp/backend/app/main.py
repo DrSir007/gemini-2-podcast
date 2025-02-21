@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from pydub import AudioSegment
 import tempfile
 import logging
+from gtts import gTTS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,9 +40,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create uploads directory if it doesn't exist
+# Create directories if they don't exist
 UPLOAD_DIR = Path("uploads")
+AUDIO_DIR = Path("audio_output")
 UPLOAD_DIR.mkdir(exist_ok=True)
+AUDIO_DIR.mkdir(exist_ok=True)
 
 class PodcastRequest(BaseModel):
     content: str
@@ -79,10 +82,36 @@ async def generate_podcast(request: PodcastRequest):
         
         logger.info("Successfully generated podcast script")
         
-        return JSONResponse(content={
-            "script": script,
-            "status": "success"
-        })
+        # Generate audio from the script
+        try:
+            # Create a temporary file for the audio
+            audio_file = AUDIO_DIR / f"podcast_{hash(script)}.mp3"
+            
+            # Convert script to audio using gTTS
+            tts = gTTS(text=script, lang='en', slow=False)
+            tts.save(str(audio_file))
+            
+            logger.info("Successfully generated audio file")
+            
+            # Return both the script and the audio file
+            return FileResponse(
+                audio_file,
+                media_type="audio/mp3",
+                filename="podcast.mp3",
+                headers={
+                    "X-Script": script
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating audio: {str(e)}")
+            # If audio generation fails, at least return the script
+            return JSONResponse(content={
+                "script": script,
+                "status": "success",
+                "audio_status": "failed",
+                "error": str(e)
+            })
         
     except Exception as e:
         logger.error(f"Error generating podcast: {str(e)}")
